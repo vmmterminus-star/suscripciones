@@ -141,7 +141,8 @@ function cargar(){
   if(!Array.isArray(d.cats))d.cats=['Juegos','Escolar','Tecnología','Comida','Ropa','Belleza'];
   return d;
 }
-function guardar(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function guardarLocal(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}}
+function guardar(){guardarLocal();marcarCambio()}
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
@@ -181,7 +182,7 @@ function ocurrencias(sub,desde,hasta){
 function avanzar(){
   const h=hoyStr();let cambio=false;
   S.subs.forEach(s=>{if(s.estado==='cancelada')return;let k=0;while(s.prox<h&&k++<800){s.prox=paso(s.prox,s,1);cambio=true}});
-  if(cambio)guardar();
+  if(cambio)guardarLocal();
 }
 
 /* ---------- dinero ---------- */
@@ -382,11 +383,116 @@ function verAjustes(nuevo){
   <div class="card" style="padding:2px 14px;margin-top:4px">${S.cats.map((c,i)=>`<div class="met"><span>${esc(c)} <span class="small mut">${S.subs.filter(s=>s.cat===c).length||''}</span></span><button data-delc="${i}">Quitar</button></div>`).join('')||'<div class="empty">Sin categorías</div>'}</div>
   <div class="inl"><input id="nuevaCat" placeholder="Nueva categoría"><button class="ch" id="bAddCat">Agregar</button></div>
   <div class="hint">Si quitas una categoría, sus suscripciones quedan como "Sin categoría".</div>
+  <div class="lbl" style="margin-top:20px">Nube</div>
+  ${syncCode?`<div class="card" style="margin-top:4px"><div>Conectada con tu código <b style="font-weight:500">•••${esc(syncCode.slice(-3))}</b></div><div class="small mut" id="syncStatus">${esc(syncEstado)}</div></div>
+   <button class="btn" id="bSyncAhora">Sincronizar ahora</button>
+   <button class="btn" id="bSubir">Subir lo de este celular</button>
+   <button class="btn" id="bTraer">Traer lo de la nube</button>
+   <button class="btn warn" id="bDesc">Desconectar</button>`
+  :`<div class="hint">Escribe un código secreto largo, por ejemplo tres palabras y un número. Usa el mismo en todos tus dispositivos. Con él se guardan tus suscripciones en la nube y te llegan los avisos.</div>
+   <div class="inl" style="margin-top:6px"><input id="codigo" autocomplete="off" autocapitalize="off" placeholder="cactus-lampara-violeta-27"><button class="ch on" id="bConectar">Conectar</button></div>
+   <div class="small mut" id="syncStatus" style="margin-top:6px">${esc(syncEstado)}</div>`}
   <div class="lbl" style="margin-top:20px">Respaldo</div>
-  <div class="hint">Por ahora tus datos viven solo en este celular. Descarga una copia de vez en cuando y guárdala en tu Drive.</div>
+  <div class="hint">Una copia en archivo, por si acaso. Guárdala en tu Drive.</div>
   <button class="btn" id="bExp">Descargar copia</button>
   <label class="btn" style="cursor:pointer">Cargar copia<input type="file" id="fImp" accept=".json,application/json" style="display:none"></label>
   <div id="impMsg" class="hint"></div>`,!nuevo);
+}
+
+/* ---------- nube (Supabase, proyecto de las agendas) ----------
+   Fila <código> = datos partidos por llave (una por suscripción) para poder juntar cambios.
+   Fila <código>__widget = próximos cobros y fines de prueba para los avisos de Pushover. */
+const SUPA_URL="https://suwhvvxihzsfbbrcocbx.supabase.co";
+const SUPA_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN1d2h2dnhpaHpzZmJicmNvY2J4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxNDk4NTgsImV4cCI6MjA5OTcyNTg1OH0.Qlf52ifK6mqlIREqoO0cwUMNPI42gwD7LUpp50DoZ7M";
+const TABLA="suscripciones_sync";
+const SUPA_HDR={apikey:SUPA_KEY,Authorization:"Bearer "+SUPA_KEY,"Content-Type":"application/json"};
+const KCODE='suscripciones_code',KTS='suscripciones_remote_ts',KBASE='suscripciones_base';
+let syncCode='';try{syncCode=localStorage.getItem(KCODE)||''}catch(e){}
+let syncEstado=syncCode?'':'Sin conectar',ocupado=false,tSync=null,pendiente=false,cambios=0,widgetTs=0;
+
+function estado(t){syncEstado=t;const e=$('syncStatus');if(e)e.textContent=t}
+function blobLocal(){
+  const o={v:'1',metodos:JSON.stringify(S.metodos),def:S.defMetodo||'',cats:JSON.stringify(S.cats)};
+  S.subs.forEach(s=>o['sub:'+s.id]=JSON.stringify(s));return o;
+}
+function aplicarBlob(o){
+  const subs=Object.keys(o).filter(k=>k.indexOf('sub:')===0).map(k=>JSON.parse(o[k]));
+  subs.sort((a,b)=>(a.creada||'')<(b.creada||'')?-1:(a.creada||'')>(b.creada||'')?1:(a.id<b.id?-1:1));
+  S={v:1,subs,metodos:o.metodos?JSON.parse(o.metodos):S.metodos,defMetodo:o.def!=null?o.def:S.defMetodo,cats:o.cats?JSON.parse(o.cats):S.cats};
+  guardarLocal();render();
+}
+function baseGet(){try{return JSON.parse(localStorage.getItem(KBASE)||'null')}catch(e){return null}}
+function baseSet(o){try{localStorage.setItem(KBASE,JSON.stringify(o))}catch(e){}}
+function editando(){const a=document.activeElement;return $('ov').classList.contains('on')||!!(a&&['INPUT','TEXTAREA','SELECT'].includes(a.tagName))}
+function marcarCambio(){pendiente=true;cambios++;if(!syncCode)return;clearTimeout(tSync);tSync=setTimeout(ciclo,1500)}
+
+function widgetBlob(){
+  const h=hoyStr(),fin=sumDias(h,370),ev=[];
+  S.subs.forEach(s=>{
+    if(s.estado==='cancelada')return;
+    const base={s:s.id,t:s.nombre,m:precioTxt(s),v:pesos(s),mp:s.metodo||'',fr:freqTxt(s),a:s.freq==='anual'||(s.freq==='otro'&&s.unidad==='meses'&&(+s.cada)>=12)?1:0,u:s.moneda==='USD'&&!s.pesos?1:0};
+    ocurrencias(s,h,fin).forEach(f=>ev.push(Object.assign({k:'c',f},base)));
+    const fp=finPrueba(s);if(fp&&fp>=h)ev.push(Object.assign({k:'p',f:fp},base));
+  });
+  return {v:1,ts:new Date().toISOString(),av:{ev}};
+}
+async function subir(){
+  const ts=new Date().toISOString(),n=cambios,blob=blobLocal();
+  const filas=[{code:syncCode,data:blob,updated_at:ts},{code:syncCode+'__widget',data:widgetBlob(),updated_at:ts}];
+  const r=await fetch(SUPA_URL+'/rest/v1/'+TABLA+'?on_conflict=code',{method:'POST',headers:Object.assign({},SUPA_HDR,{Prefer:'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify(filas)});
+  if(!r.ok){estado('No se pudo guardar en la nube ('+r.status+')');return false}
+  localStorage.setItem(KTS,ts);baseSet(blob);widgetTs=Date.now();
+  pendiente=(cambios!==n);if(pendiente)marcarCambio();
+  estado('Guardado en la nube');return true;
+}
+async function leerNube(campos){
+  const r=await fetch(SUPA_URL+'/rest/v1/'+TABLA+'?code=eq.'+encodeURIComponent(syncCode)+'&select='+campos,{headers:SUPA_HDR});
+  if(!r.ok)throw new Error('leer '+r.status);return r.json();
+}
+async function bajar(){
+  const rows=await leerNube('data,updated_at');if(!rows.length)return;
+  const data=rows[0].data||{};aplicarBlob(data);baseSet(data);localStorage.setItem(KTS,rows[0].updated_at);pendiente=false;
+  estado('Al día');
+}
+async function juntar(){
+  const rows=await leerNube('data,updated_at');if(!rows.length){await subir();return}
+  const nube=rows[0].data||{},aqui=blobLocal(),base=baseGet()||nube,junto={};
+  new Set(Object.keys(nube).concat(Object.keys(aqui),Object.keys(base))).forEach(k=>{
+    const v=(aqui[k]!==base[k])?aqui[k]:nube[k];if(v!==undefined)junto[k]=v;
+  });
+  aplicarBlob(junto);localStorage.setItem(KTS,rows[0].updated_at);await subir();
+}
+async function subirWidget(){
+  try{await fetch(SUPA_URL+'/rest/v1/'+TABLA+'?on_conflict=code',{method:'POST',headers:Object.assign({},SUPA_HDR,{Prefer:'resolution=merge-duplicates,return=minimal'}),body:JSON.stringify([{code:syncCode+'__widget',data:widgetBlob(),updated_at:new Date().toISOString()}])});widgetTs=Date.now()}catch(e){}
+}
+async function ciclo(){
+  if(!syncCode||ocupado||location.protocol==='file:')return;ocupado=true;
+  try{
+    const rows=await leerNube('updated_at');
+    if(!rows.length){await subir();return}
+    const nube=rows[0].updated_at,local=localStorage.getItem(KTS)||'';
+    if(nube>local){
+      if(editando()){estado('Hay cambios en la nube, se traen al cerrar esta ventana');return}
+      if(pendiente&&baseGet()){await juntar();return}
+      await bajar();return;
+    }
+    if(pendiente)await subir();
+    else{estado('Al día');if(Date.now()-widgetTs>15*60*1000)subirWidget()}
+  }catch(e){estado('Sin conexión')}
+  finally{ocupado=false}
+}
+function conectar(v){
+  v=(v||'').trim();if(v.length<8){estado('Usa un código más largo, de al menos 8 letras.');return}
+  syncCode=v;localStorage.setItem(KCODE,v);localStorage.removeItem(KBASE);localStorage.removeItem(KTS);pendiente=false;
+  estado('Conectando…');verAjustes();ciclo().then(()=>{if($('ov').classList.contains('on'))verAjustes()});arrancarSync();
+}
+let syncArrancado=false;
+function arrancarSync(){
+  if(!syncCode||syncArrancado)return;syncArrancado=true;
+  if(!baseGet())baseSet(blobLocal());
+  ciclo();setInterval(ciclo,15000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)ciclo()});
+  window.addEventListener('focus',ciclo);
 }
 
 /* ---------- eventos ---------- */
@@ -417,6 +523,14 @@ document.addEventListener('click',e=>{
   if(t.id==='bBorrar'){
     if(t.dataset.ok){S.subs=S.subs.filter(x=>x.id!==F._id);guardar();cerrar();return render()}
     t.dataset.ok=1;t.textContent='Toca otra vez para borrar';return;
+  }
+  if(t.id==='bConectar')return conectar($('codigo').value);
+  if(t.id==='bSyncAhora'){estado('Revisando…');return ciclo()}
+  if(t.id==='bSubir'||t.id==='bTraer'||t.id==='bDesc'){
+    if(!t.dataset.ok){t.dataset.ok=1;t.textContent={bSubir:'Toca otra vez: reemplaza lo de la nube',bTraer:'Toca otra vez: reemplaza lo de este celular',bDesc:'Toca otra vez para desconectar'}[t.id];return}
+    if(t.id==='bSubir'){estado('Subiendo…');return subir().catch(()=>estado('Sin conexión')).then(()=>verAjustes())}
+    if(t.id==='bTraer'){estado('Trayendo…');return bajar().catch(()=>estado('Sin conexión')).then(()=>verAjustes())}
+    syncCode='';localStorage.removeItem(KCODE);localStorage.removeItem(KTS);localStorage.removeItem(KBASE);estado('Sin conectar');return verAjustes();
   }
   if(t.dataset.def){S.defMetodo=S.metodos[+t.dataset.def];guardar();return verAjustes()}
   if(t.dataset.delm){const i=+t.dataset.delm;const m=S.metodos[i];S.metodos.splice(i,1);if(S.defMetodo===m)S.defMetodo=S.metodos[0]||'';guardar();return verAjustes()}
@@ -452,6 +566,7 @@ document.addEventListener('change',e=>{
 
 const h0=new Date();vista.y=h0.getFullYear();vista.m=h0.getMonth();
 render();
+arrancarSync();
 </script>
 </body>
 </html>
